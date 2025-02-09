@@ -687,7 +687,7 @@ def train_and_evaluate(
 
             # Generator backward and update
             _, y_d_hat_g, fmap_r, fmap_g = net_d(wave, y_hat)
-
+            y_hat_mel = F.pad(y_hat_mel, (0, 1))
             loss_mel = fn_mel_loss(wave, y_hat) * config.train.c_mel / 3.0
             loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * config.train.c_kl
             loss_fm = feature_loss(fmap_r, fmap_g)
