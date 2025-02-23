@@ -464,9 +464,7 @@ class VoiceConverter:
         )
 
     def setup_network(self):
-    """
-    Sets up the network configuration based on the loaded checkpoint.
-    """
+    
     if self.cpt is not None:
         self.tgt_sr = self.cpt["config"][-1]
         self.cpt["config"][-3] = self.cpt["weight"]["emb_g.weight"].shape[0]
