@@ -1,4 +1,3 @@
-import math
 import numpy as np
 import torch
 from torch import nn
@@ -312,15 +311,16 @@ class RefineGANGenerator(nn.Module):
         start_channels: int = 16,
         gin_channels: int = 256,
         checkpointing: bool = False,
-        upsample_initial_channel = 512
+        upsample_initial_channel=512,
     ):
         super().__init__()
 
         self.upsample_rates = upsample_rates
         self.leaky_relu_slope = leaky_relu_slope
         self.checkpointing = checkpointing
+        self.upp = int(np.prod(upsample_rates))
+        assert self.upp == sample_rate // 100
 
-        self.upp = np.prod(upsample_rates)
         self.m_source = SineGenerator(sample_rate)
 
         # expanded f0 sinegen -> match mel_conv
@@ -335,31 +335,46 @@ class RefineGANGenerator(nn.Module):
             )
         )
 
+        # f0 input gets upscaled to full segment size, then downscaled back to match each upscale step
+
+        # segment  upscaling mel           downscaling f0
+        # 36     = input z               = 17280 / (2 x 2 x 10 x 12)
+        # 432    = 36 x 12               = 17280 / (2 x 2 x 10)
+        # 4320   = 36 x 12 x 10          = 17280 / (2 x 2)
+        # 8640   = 36 x 12 x 10 x 2      = 17280 / (2)
+        # 17280  = 36 x 12 x 10 x 2 x 2  = 17280 / 1
+
         stride_f0s = [
-            math.prod(upsample_rates[i + 1 :]) if i + 1 < len(upsample_rates) else 1
-            for i in range(len(upsample_rates))
+            upsample_rates[1] * upsample_rates[2] * upsample_rates[3],
+            upsample_rates[2] * upsample_rates[3],
+            upsample_rates[3],
+            1,
         ]
 
         channels = upsample_initial_channel
 
         self.downsample_blocks = nn.ModuleList([])
         for i, u in enumerate(upsample_rates):
-            # handling odd upsampling rates
-            stride = stride_f0s[i]
-            kernel = 1 if stride == 1 else stride * 2 - stride % 2
-            padding = 0 if stride == 1 else (kernel - stride) // 2
 
-            # f0 input gets upscaled to full segment size, then downscaled back to match each upscale step
-            
-            self.downsample_blocks.append(
-                nn.Conv1d(
-                    in_channels=1,
-                    out_channels=channels // 2 ** (i + 2),
-                    kernel_size=kernel,
-                    stride=stride,
-                    padding = padding
+            # 44k f0 downsampling is done using F.interpolate in the forward call due to 2.205 multiplier
+            if self.upp == 441:
+                self.downsample_blocks.append(
+                    nn.Conv1d(
+                        in_channels=1,
+                        out_channels=channels // 2 ** (i + 2),
+                        kernel_size=1,
+                    )
                 )
-            )
+            else:
+                self.downsample_blocks.append(
+                    nn.Conv1d(
+                        in_channels=1,
+                        out_channels=channels // 2 ** (i + 2),
+                        kernel_size=stride_f0s[i] * 2 if stride_f0s[i] > 1 else 1,
+                        stride=stride_f0s[i],
+                        padding=stride_f0s[i] // 2,
+                    )
+                )
 
         self.mel_conv = weight_norm(
             nn.Conv1d(
@@ -387,12 +402,13 @@ class RefineGANGenerator(nn.Module):
                 channels,
                 channels,
                 kernel_size=15,
-                padding=7, 
+                padding=7,
                 groups=channels,
-                bias=False)
+                bias=False,
+            )
 
             low_pass.weight.data.fill_(1.0 / 15)
-            
+
             self.filters.append(low_pass)
 
             self.upsample_conv_blocks.append(
@@ -416,7 +432,6 @@ class RefineGANGenerator(nn.Module):
                 padding=3,
             )
         )
-        
 
     def forward(self, mel: torch.Tensor, f0: torch.Tensor, g: torch.Tensor = None):
 
@@ -447,14 +462,20 @@ class RefineGANGenerator(nn.Module):
             if self.training and self.checkpointing:
                 x = checkpoint(ups, x, use_reentrant=False)
                 x = checkpoint(flt, x, use_reentrant=False)
-                x = torch.cat([x, down(har_source)], dim=1)
+                h = down(har_source)
+                if self.upp == 441:
+                    h = F.interpolate(h, size=x.shape[-1], mode="linear")
+                x = torch.cat([x, h], dim=1)
                 x = checkpoint(res, x, use_reentrant=False)
             else:
                 x = ups(x)
                 x = flt(x)
-                x = torch.cat([x, down(har_source)], dim=1)
+                h = down(har_source)
+                if self.upp == 441:
+                    h = F.interpolate(h, size=x.shape[-1], mode="linear")
+                x = torch.cat([x, h], dim=1)
                 x = res(x)
-                
+
         # in-place call
         x = F.leaky_relu_(x, self.leaky_relu_slope)
         x = self.conv_post(x)

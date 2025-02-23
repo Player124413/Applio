@@ -100,6 +100,8 @@ training_file_path = os.path.join(experiment_dir, "training_data.json")
 avg_losses = {
     "gen_loss_queue": deque(maxlen=10),
     "disc_loss_queue": deque(maxlen=10),
+    "grad_d_50": deque(maxlen=50),
+    "grad_g_50": deque(maxlen=50),
     "disc_loss_50": deque(maxlen=50),
     "fm_loss_50": deque(maxlen=50),
     "kl_loss_50": deque(maxlen=50),
@@ -134,7 +136,7 @@ class EpochRecorder:
 
 
 def verify_checkpoint_shapes(checkpoint_path, model):
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     checkpoint_state_dict = checkpoint["model"]
     try:
         if hasattr(model, "module"):
@@ -420,8 +422,8 @@ def run(
         net_g = net_g.cuda(device_id)
         net_d = net_d.cuda(device_id)
     else:
-        net_g.to(device)
-        net_d.to(device)
+        net_g = net_g.to(device)
+        net_d = net_d.to(device)
 
     if optimizer == "AdamW":
         optimizer = torch.optim.AdamW
@@ -469,11 +471,15 @@ def run(
                 print(f"Loaded pretrained (G) '{pretrainG}'")
             if hasattr(net_g, "module"):
                 net_g.module.load_state_dict(
-                    torch.load(pretrainG, map_location="cpu")["model"]
+                    torch.load(pretrainG, map_location="cpu", weights_only=True)[
+                        "model"
+                    ]
                 )
             else:
                 net_g.load_state_dict(
-                    torch.load(pretrainG, map_location="cpu")["model"]
+                    torch.load(pretrainG, map_location="cpu", weights_only=True)[
+                        "model"
+                    ]
                 )
 
         if pretrainD != "" and pretrainD != "None":
@@ -481,11 +487,15 @@ def run(
                 print(f"Loaded pretrained (D) '{pretrainD}'")
             if hasattr(net_d, "module"):
                 net_d.module.load_state_dict(
-                    torch.load(pretrainD, map_location="cpu")["model"]
+                    torch.load(pretrainD, map_location="cpu", weights_only=True)[
+                        "model"
+                    ]
                 )
             else:
                 net_d.load_state_dict(
-                    torch.load(pretrainD, map_location="cpu")["model"]
+                    torch.load(pretrainD, map_location="cpu", weights_only=True)[
+                        "model"
+                    ]
                 )
 
     # Initialize schedulers
@@ -703,6 +713,8 @@ def train_and_evaluate(
             global_step += 1
 
             # queue for rolling losses over 50 steps
+            avg_losses["grad_d_50"].append(grad_norm_d.detach())
+            avg_losses["grad_g_50"].append(grad_norm_g.detach())
             avg_losses["disc_loss_50"].append(loss_disc.detach())
             avg_losses["fm_loss_50"].append(loss_fm.detach())
             avg_losses["kl_loss_50"].append(loss_kl.detach())
@@ -712,6 +724,12 @@ def train_and_evaluate(
             if rank == 0 and global_step % 50 == 0:
                 # logging rolling averages
                 scalar_dict = {
+                    "grad_avg_50/norm_d": torch.mean(
+                        torch.stack(list(avg_losses["grad_d_50"]))
+                    ),
+                    "grad_avg_50/norm_g": torch.mean(
+                        torch.stack(list(avg_losses["grad_g_50"]))
+                    ),
                     "loss_avg_50/d/total": torch.mean(
                         torch.stack(list(avg_losses["disc_loss_50"]))
                     ),
