@@ -497,8 +497,7 @@ class VoiceConverter:
                 except Exception as e:
                     print(f"Failed to initialize {vocoder}: {e}")
                     continue
-              else:
-                  raise RuntimeError("All vocoders failed to initialize.")
+              
 
     def setup_vc_instance(self):
         """
