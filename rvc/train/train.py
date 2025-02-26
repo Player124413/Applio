@@ -695,7 +695,8 @@ def train_and_evaluate(
             loss_fm = feature_loss(fmap_r, fmap_g)
             loss_gen, _ = generator_loss(y_d_hat_g)
             loss_gen_all = loss_gen + loss_fm + loss_mel + loss_kl
-
+            del y_mel, y_hat_mel, z_p, logs_q, m_p, logs_p, z_mask, fmap_r, fmap_g, y_d_hat_g
+            torch.cuda.empty_cache()
             if loss_gen_all < lowest_value["value"]:
                 lowest_value = {
                     "step": global_step,
